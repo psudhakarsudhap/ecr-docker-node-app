@@ -111,5 +111,5 @@ app.delete("/api/v1/students/:id", async (req, res) => {
 });
 const port = process.env.PORT || 3000;
 app.listen(port, () =>
-  console.log(`Express server on http://localhost:${port}`),
+  console.log(`Express server at http://localhost:${port}`),
 );
