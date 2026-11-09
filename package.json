@@ -1,0 +1,27 @@
+{
+  "name": "localstack-node",
+  "version": "1.0.0",
+  "description": "Node.js app connecting to LocalStack / Floci (local AWS emulators)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "deploy": "node deploy.js",
+    "server": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-api-gateway": "^3.600.0",
+    "@aws-sdk/client-dynamodb": "^3.1162.0",
+    "@aws-sdk/client-lambda": "^3.600.0",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/client-sqs": "^3.600.0",
+    "@aws-sdk/lib-dynamodb": "^3.1162.0",
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "mongoose": "^9.12.0"
+  },
+  "type": "module",
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}
