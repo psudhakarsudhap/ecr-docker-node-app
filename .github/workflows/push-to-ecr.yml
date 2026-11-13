@@ -26,6 +26,13 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
+      - name: Verify Docker daemon access
+        run: |
+          $dockerVersion = cmd /c "docker version 2>&1"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker daemon is unavailable to the runner account. Check Docker Desktop and the runner service account's Docker pipe access.`n$($dockerVersion -join "`n")"
+          }
+
       - name: Build and push Docker image
         run: |
           $tag = $env:GITHUB_SHA.Substring(0,7)
