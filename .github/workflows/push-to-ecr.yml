@@ -31,11 +31,12 @@ jobs:
           $tag = $env:GITHUB_SHA.Substring(0,7)
 
           $localImage = "cicd-app:$tag"
-          $registryImage = "localhost:4566/000000000000/us-east-1/cicd-app:$tag"
+          $registry = "127.0.0.1:4566"
+          $registryImage = "${registry}/000000000000/us-east-1/cicd-app:$tag"
           $ecsImage = "000000000000.dkr.ecr.us-east-1.amazonaws.com/cicd-app:$tag"
 
           aws ecr get-login-password --endpoint-url http://localhost:4566 |
-            docker login --username AWS --password-stdin localhost:4566
+            docker login --username AWS --password-stdin $registry
 
           if ($LASTEXITCODE -ne 0) { throw "ECR login failed" }
 
@@ -44,6 +45,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Docker build failed" }
 
           docker tag $localImage $registryImage
+          if ($LASTEXITCODE -ne 0) { throw "Docker tag failed" }
+
           docker push $registryImage
 
           if ($LASTEXITCODE -ne 0) { throw "Docker push failed" }
