@@ -1,0 +1,38 @@
+{
+  "family": "express-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512",
+  "containerDefinitions": [
+    {
+      "name": "express-app",
+      "image": "000000000000.dkr.ecr.us-east-1.amazonaws.com/cicd-app:v1",
+      "essential": true,
+      "cpu": 128,
+      "memory": 256,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "MONGODB_URI",
+          "value": "mongodb://admin:admin123@mongodb:27017"
+        },
+        {
+          "name": "DB_NAME",
+          "value": "studentsdb"
+        },
+        {
+          "name": "PORT",
+          "value": "3000"
+        }
+      ]
+    }
+  ]
+}

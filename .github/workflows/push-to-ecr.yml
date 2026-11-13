@@ -1,67 +1,213 @@
-name: Build and push Docker image to ECR
+name: Deploy Express App to FLoCI ECS
 
 on:
   push:
     branches:
       - main
 
-permissions:
-  contents: read
-  id-token: write
+
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-24.04
+  deploy:
+    runs-on: [self-hosted, Windows, X64]
+
     env:
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
-      AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.FLOCI_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.FLOCI_AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: us-east-1
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      DB_NAME: ${{ secrets.DB_NAME }}
 
     steps:
-      - name: Check out source
-        uses: actions/checkout@v6
+      - name: Checkout source code
+        uses: actions/checkout@v4
 
-      - name: Check application syntax
-        run: node --check server.js
-
-      - name: Verify deployment settings
+      - name: Build and push Docker image
+        shell: pwsh
         run: |
-          test -n "$AWS_REGION" || { echo "Set the AWS_REGION repository variable."; exit 1; }
-          test -n "$ECR_REPOSITORY" || { echo "Set the ECR_REPOSITORY repository variable."; exit 1; }
-          test -n "$AWS_ROLE_TO_ASSUME" || { echo "Set the AWS_ROLE_TO_ASSUME repository secret."; exit 1; }
+          $tag = $env:GITHUB_SHA.Substring(0,7)
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ vars.AWS_REGION }}
+          $localImage = "cicd-app:$tag"
+          $registryImage = "localhost:4566/000000000000/us-east-1/cicd-app:$tag"
+          $ecsImage = "000000000000.dkr.ecr.us-east-1.amazonaws.com/cicd-app:$tag"
 
-      - name: Get ECR registry
+          aws ecr get-login-password --endpoint-url http://localhost:4566 |
+            docker login --username AWS --password-stdin localhost:4566
+
+          if ($LASTEXITCODE -ne 0) { throw "ECR login failed" }
+
+          docker build -t $localImage .
+
+          if ($LASTEXITCODE -ne 0) { throw "Docker build failed" }
+
+          docker tag $localImage $registryImage
+          docker push $registryImage
+
+          if ($LASTEXITCODE -ne 0) { throw "Docker push failed" }
+
+          "IMAGE_TAG=$tag" >> $env:GITHUB_ENV
+          "ECS_IMAGE=$ecsImage" >> $env:GITHUB_ENV
+
+      - name: Register ECS task definition
+        shell: pwsh
         run: |
-          account_id=$(aws sts get-caller-identity --query Account --output text)
-          echo "ECR_REGISTRY=${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_ENV"
+          $task = Get-Content task-definition.json -Raw |
+            ConvertFrom-Json
 
-      - name: Create ECR repository if needed
-        run: |
-          aws ecr describe-repositories \
-            --repository-names "$ECR_REPOSITORY" \
-            --region "$AWS_REGION" >/dev/null 2>&1 ||
-          aws ecr create-repository \
-            --repository-name "$ECR_REPOSITORY" \
-            --image-scanning-configuration scanOnPush=true \
-            --region "$AWS_REGION" >/dev/null
+          $container = $task.containerDefinitions |
+            Where-Object { $_.name -eq "express-app" }
 
-      - name: Log in to ECR
-        run: |
-          aws ecr get-login-password --region "$AWS_REGION" |
-            docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          $container.image = $env:ECS_IMAGE
 
-      - name: Build and push image
+          # Remove old, incorrect variable names
+          $container.environment = @(
+            $container.environment |
+            Where-Object { $_.name -notin @("MONGO_URI", "MONGO_DB") }
+          )
+
+          $settings = @{
+            MONGODB_URI = $env:MONGODB_URI
+            DB_NAME = "studentsdb"
+            PORT = "3000"
+          }
+
+          foreach ($key in $settings.Keys) {
+            $item = $container.environment |
+              Where-Object { $_.name -eq $key } |
+              Select-Object -First 1
+
+            if ($item) {
+              $item.value = $settings[$key]
+            }
+            else {
+              $container.environment += [PSCustomObject]@{
+                name = $key
+                value = $settings[$key]
+              }
+            }
+          }
+
+          $task | ConvertTo-Json -Depth 100 |
+            Set-Content task-definition-ci.json
+
+          $taskArn = aws ecs register-task-definition `
+            --cli-input-json file://task-definition-ci.json `
+            --query "taskDefinition.taskDefinitionArn" `
+            --output text `
+            --endpoint-url http://localhost:4566
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Task definition registration failed"
+          }
+
+          "TASK_DEFINITION_ARN=$taskArn" >> $env:GITHUB_ENV
+
+      - name: Stop old Express task
+        shell: pwsh
         run: |
-          image="$ECR_REGISTRY/$ECR_REPOSITORY"
-          docker build \
-            --tag "$image:latest" \
-            --tag "$image:$GITHUB_SHA" \
-            .
-          docker push "$image:latest"
-          docker push "$image:$GITHUB_SHA"
+          $oldTasks = aws ecs list-tasks `
+            --cluster node-mongo-cluster `
+            --query "taskArns[]" `
+            --output text `
+            --endpoint-url http://localhost:4566
+
+          if ($oldTasks -and $oldTasks -ne "None") {
+            $taskList = $oldTasks -split '\s+'
+
+            foreach ($oldTask in $taskList) {
+              if ($oldTask) {
+                aws ecs stop-task `
+                  --cluster node-mongo-cluster `
+                  --task $oldTask `
+                  --endpoint-url http://localhost:4566
+              }
+            }
+
+            foreach ($oldTask in $taskList) {
+              if (-not $oldTask) { continue }
+
+              $deadline = (Get-Date).AddMinutes(2)
+
+              do {
+                $status = aws ecs describe-tasks `
+                  --cluster node-mongo-cluster `
+                  --tasks $oldTask `
+                  --query "tasks[0].lastStatus" `
+                  --output text `
+                  --endpoint-url http://localhost:4566
+
+                if ($status -eq "STOPPED") { break }
+
+                Start-Sleep -Seconds 2
+              } while ((Get-Date) -lt $deadline)
+
+              if ($status -ne "STOPPED") {
+                throw "Old ECS task did not stop in time"
+              }
+            }
+          }
+
+      - name: Launch new Fargate task
+        shell: pwsh
+        run: |
+          $newTask = aws ecs run-task `
+            --cluster node-mongo-cluster `
+            --launch-type FARGATE `
+            --task-definition $env:TASK_DEFINITION_ARN `
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-default-us-east-1-a],securityGroups=[sg-default-us-east-1],assignPublicIp=DISABLED}" `
+            --query "tasks[0].taskArn" `
+            --output text `
+            --endpoint-url http://localhost:4566
+
+          if ($LASTEXITCODE -ne 0 -or $newTask -eq "None") {
+            throw "New ECS task launch failed"
+          }
+
+          "NEW_TASK=$newTask" >> $env:GITHUB_ENV
+
+          $deadline = (Get-Date).AddMinutes(2)
+
+          do {
+            $status = aws ecs describe-tasks `
+              --cluster node-mongo-cluster `
+              --tasks $newTask `
+              --query "tasks[0].lastStatus" `
+              --output text `
+              --endpoint-url http://localhost:4566
+
+            if ($status -eq "RUNNING") { break }
+            if ($status -eq "STOPPED") {
+              throw "New ECS task stopped unexpectedly"
+            }
+
+            Start-Sleep -Seconds 2
+          } while ((Get-Date) -lt $deadline)
+
+          if ($status -ne "RUNNING") {
+            throw "New ECS task did not reach RUNNING state"
+          }
+
+      - name: Test deployed API
+        shell: pwsh
+        run: |
+          $success = $false
+
+          for ($i = 1; $i -le 30; $i++) {
+            try {
+              $response = Invoke-RestMethod `
+                http://localhost:3000/api/v1/students
+
+              Write-Host "Deployment successful!"
+              $response | ConvertTo-Json -Depth 10
+              $success = $true
+              break
+            }
+            catch {
+              Write-Host "Waiting for API..."
+              Start-Sleep -Seconds 2
+            }
+          }
+
+          if (-not $success) {
+            throw "API health verification failed"
+          }
