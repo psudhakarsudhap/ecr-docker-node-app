@@ -24,7 +24,7 @@ const studentSchema = new mongoose.Schema({
 const Student = mongoose.model("Student", studentSchema);
 
 app.get("/", (_req, res) => {
-  res.json({ message: "API is running" });
+  res.json({ message: "API is running updated" });
 });
 
 //CRUD
